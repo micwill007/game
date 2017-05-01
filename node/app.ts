@@ -2,12 +2,19 @@ var express = require('express');
 var app = express();
 var serv = require('http').Server(app);
 var io = require('socket.io')(serv);
+var michael = require('./server/test/test.js');
 
+// DB.
+var mongojs = require('mongojs');
+var db = mongojs('localhost:27017/game', ['account','progress']);
+
+// Serve public static files (CSS/JS).
+app.use(express.static(__dirname + '/client'));
+
+// Serve our only route '/'.
 app.get('/', function (req, res) {
     res.sendFile(__dirname + '/client/index.html');
 });
-
-app.use('/client', express.static(__dirname + '/client'));
 
 var SOCKET_LIST = {};
 var playerList = {};
@@ -20,19 +27,24 @@ class Entity {
     protected y: number;
     protected spdX: number;
     protected spdY: number;
-    
+    id: string;
 
     constructor() {
         this.x = 250;
         this.y = 250;
         this.spdX = 0;
         this.spdY = 0;
+        this.id = '';
     }
 
     updatePosition() {
         this.x += this.spdX;
         this.y += this.spdY;
     }
+
+    // getDistance() {
+    //     return Math.sqrt(Math.pow(this.x-pt.x,2) + Math.pow(this.y-pt.y,2))
+    // }
 
     update() {
         this.updatePosition();
@@ -44,17 +56,17 @@ class Entity {
  */
 class Player extends Entity {
 
-     id: string;
      number: string;
      pressingLeft: boolean;
      pressingRight: boolean;
      pressingUp: boolean;
      pressingDown: boolean;
      maxSpd: number;
+     mouseAngle: number;
      
     constructor(id: string) {
         super();
-        this.id = id;
+
         this.number = "" + Math.floor(10 * Math.random())
         this.pressingRight = false;
         this.pressingLeft = false,
@@ -83,6 +95,7 @@ class Player extends Entity {
         else {
             this.spdY = 0;
         }
+        this.update();
     }
 }
 
@@ -130,30 +143,100 @@ var update = function () {
 
 io.on('connection', function (socket) {
 
-    console.log('a user connected');
-
-    // Create unique user socket.
+    // Create unique user socket and throw them in the list.
     socket.id = Math.random();
     SOCKET_LIST[socket.id] = socket;
 
-    // Chat.
+    onConnect(socket);
+
+    // Event hooks while a user is connected.
+
     socket.on('chat message', function (msg) {
         console.log('message: ' + msg);
         io.emit('chat message', msg);
     });
 
-    onConnect(socket);
+    socket.on('signIn', function(data) {
+        isValidPassword(data, function(res) {
+            if (res) {
+                onConnect(socket);
+                socket.emit('signInResponse', {success:true});
+            }
+            else {
+                socket.emit('signInResponse', {success:false});
+            }
+        });
+    })
+
+     socket.on('signUp',function(data){
+        isUsernameTaken(data,function(res){
+            if (res) {
+                socket.emit('signUpResponse',{success:false});     
+            } 
+            else {
+                addUser(data,function(){
+                    socket.emit('signUpResponse',{success:true});                  
+                });
+            }
+        });    
+    });
+
 
     socket.on('disconnect', function () {
         delete SOCKET_LIST[socket.id];
         onDisconnect(socket);
-        console.log('a user disconnected');
+    });
+
+    socket.on('sendMsgToServer',function(data){
+        var playerName = ("" + socket.id).slice(2,7);
+        for(var i in SOCKET_LIST){
+            SOCKET_LIST[i].emit('addToChat',playerName + ': ' + data);
+        }
+    });
+
+    socket.on('evalServer',function(data){
+        if(!DEBUG)
+            return;
+        var res = eval(data);
+        socket.emit('evalAnswer',res);     
     });
 
 });
 
+/**
+ * Database functions. Global debug is for testing purposes only. cb param = callback.
+ */
+var DEBUG = true;
 
-// Update loop.
+var isValidPassword = function(data, cb) {
+    db.account.find({username:data.username,password:data.password}, function(err, res) {
+        if (res.length > 0) {
+            cb(true);
+        }
+        else {
+            cb(false);
+        }
+    })
+}
+
+var isUsernameTaken = function(data, cb) {
+    db.account.find({username:data.username}, function(err,res){
+        if (res.length > 0) {
+            cb(true)
+        }
+        else {
+            cb(false);
+        }
+    });
+}
+
+var addUser = function(data,cb) {
+    db.account.insert({username:data.username,password:data.password}, function(err) {
+        cb();
+    })
+}
+
+// Global player update loop.
 setInterval(function () {
     var pack = update();
 
@@ -163,7 +246,7 @@ setInterval(function () {
         socket.emit('newPositions', pack);
     }
 
-}, 5000);
+}, 1000/30);
 
 
 serv.listen(2000, function () {
